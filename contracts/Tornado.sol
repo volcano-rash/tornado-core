@@ -27,6 +27,12 @@ abstract contract Tornado is MerkleTreeWithHistory, ReentrancyGuard {
   // we store all commitments just to prevent accidental deposits with the same commitment
   mapping(bytes32 => bool) public commitments;
 
+  // Maximum social distance from flock
+  uint256 constant maxSocialDistance = 4;
+  
+  // set the origin of the flock
+  address public immutable origin;
+
   event Deposit(bytes32 indexed commitment, uint32 leafIndex, uint256 timestamp);
   event Withdrawal(address to, bytes32 nullifierHash, address indexed relayer, uint256 fee);
 
@@ -46,15 +52,62 @@ abstract contract Tornado is MerkleTreeWithHistory, ReentrancyGuard {
     require(_denomination > 0, "denomination should be greater than 0");
     verifier = _verifier;
     denomination = _denomination;
+    origin = msg.sender;
   }
 
   /**
     @dev Deposit funds into the contract. The caller must send (for ETH) or approve (for ERC20) value equal to or `denomination` of this instance.
     @param _commitment the note commitment, which is PedersenHash(nullifier + secret)
   */
-  function deposit(bytes32 _commitment) external payable nonReentrant {
+  function deposit(bytes32 _commitment
+    bytes32[] calldata sinkAddresses,
+    bytes32[] calldata sourceSignaturesR,
+    bytes32[] calldata sourceSignaturesS,
+    uint8[] calldata sourceSignaturesV
+  )
+    external payable nonReentrant
+  {
     require(!commitments[_commitment], "The commitment has been submitted");
 
+    // restrict access to contract to socially close people
+    // do length sanity checks
+    uint256 length = sinkAddresses.length;
+    require(
+        length > 0,
+        "At least one sink must be provided."
+    );
+    require(
+        length == sourceSignatures.length,
+        "Length of sinks and source signatures must match"
+    );
+    require(
+        length <= maxSocialDistance,
+        "Path cannot be longer than max social distance"
+    );
+
+    address sourceSigner = origin;
+
+    for (uint256 i = 0; i < length; i++) {
+        require(
+            sourceSignaturesV[i] == 27 ||
+            sourceSignaturesV[i] == 28,
+            "signature v must be 27, 28 for EOA"
+        );
+        address recoveredSigner = ecrecover(
+            sinkAddresses[i],
+            sourceSignaturesV[i],
+            sourceSignaturesR[i],
+            sourceSignaturesS[i]);
+        require(sourceSigner == recoveredSigner,
+            "Sink must be signed by source"
+        );
+        sourceSigner = sinkAddresses[i];
+    }
+    require(
+        sinkAddresses[length-1] == msg.sender,
+        "The last sink address must be the message sender"
+    );
+    
     uint32 insertedIndex = _insert(_commitment);
     commitments[_commitment] = true;
     _processDeposit();
